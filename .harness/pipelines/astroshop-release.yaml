@@ -112,7 +112,7 @@ pipeline:
                     case $svc in
                       product-catalog) docker run --rm -v "$PWD/src/product-catalog:/src" -w /src golang:1.26 sh -c 'go vet ./... && go test ./...' ;;
                       cart)            docker run --rm -v "$PWD:/repo" -w /repo/src/cart mcr.microsoft.com/dotnet/sdk:10.0 dotnet test tests ;;
-                      recommendation)  docker run --rm -v "$PWD/src/recommendation:/src" -w /src eclipse-temurin:24-jdk ./gradlew --no-daemon test ;;
+                      recommendation)  docker run --rm -v "$PWD:/repo" -w /repo/src/recommendation eclipse-temurin:24-jdk ./gradlew --no-daemon test ;;
                     esac
                   done
           - step:
