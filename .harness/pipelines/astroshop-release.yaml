@@ -166,8 +166,11 @@ pipeline:
                 connectorRef: account.harnessImage
                 image: aquasec/trivy:latest
                 command: |
+                  set -e
                   date +%s000 > /harness/.sdlc/security_start
-                  trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --no-progress src/product-catalog src/cart src/recommendation
+                  for d in src/product-catalog src/cart src/recommendation; do
+                    trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --no-progress "$d"
+                  done
           - step:
               type: Run
               name: SDLC security_scan
