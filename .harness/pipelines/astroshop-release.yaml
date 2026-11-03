@@ -63,6 +63,8 @@ pipeline:
                     fi
                   done
                   export CHANGED="$(echo $CHANGED | xargs)"
+                  export GIT_SHA="$(git rev-parse HEAD)"
+                  export SHORT_SHA="$(git rev-parse --short=7 HEAD)"
                   export START_MS="$(date +%s%3N)"
                   mkdir -p /harness/.sdlc && echo "$START_MS" > /harness/.sdlc/start_ms
                 outputVariables:
@@ -71,6 +73,8 @@ pipeline:
                 - name: TAG_CART
                 - name: TAG_RECOMMENDATION
                 - name: START_MS
+                - name: GIT_SHA
+                - name: SHORT_SHA
           - step:
               type: Run
               name: SDLC checkout
@@ -86,13 +90,19 @@ pipeline:
                   RUN_URL: "<+pipeline.executionUrl>"
                   REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
                   GIT_BRANCH: "<+codebase.branch>"
-                  GIT_SHA: "<+codebase.commitSha>"
+                  GIT_SHA: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                   CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
                 command: |
                   for svc in ${CHANGED:-astroshop}; do
-                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+codebase.shortCommitSha> \
+                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA> \
                       sh .harness/scripts/sdlc-event.sh checkout "Checkout" <+execution.steps.detect.status> <+execution.steps.detect.output.outputVariables.START_MS>
                   done
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           - step:
               type: Run
               name: Quality scan - unit tests
@@ -132,13 +142,19 @@ pipeline:
                   RUN_URL: "<+pipeline.executionUrl>"
                   REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
                   GIT_BRANCH: "<+codebase.branch>"
-                  GIT_SHA: "<+codebase.commitSha>"
+                  GIT_SHA: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                   CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
                 command: |
                   for svc in ${CHANGED:-astroshop}; do
-                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+codebase.shortCommitSha> \
+                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA> \
                       sh .harness/scripts/sdlc-event.sh quality_scan "Unit tests" <+execution.steps.quality_scan.status> "$(cat /harness/.sdlc/quality_start 2>/dev/null)"
                   done
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           - step:
               type: Run
               name: Security scan - Trivy fs
@@ -169,13 +185,19 @@ pipeline:
                   RUN_URL: "<+pipeline.executionUrl>"
                   REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
                   GIT_BRANCH: "<+codebase.branch>"
-                  GIT_SHA: "<+codebase.commitSha>"
+                  GIT_SHA: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                   CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
                 command: |
                   for svc in ${CHANGED:-astroshop}; do
-                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+codebase.shortCommitSha> \
+                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA> \
                       sh .harness/scripts/sdlc-event.sh security_scan "Trivy fs" <+execution.steps.security_scan.status> "$(cat /harness/.sdlc/security_start 2>/dev/null)"
                   done
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           - step:
               type: Run
               name: Build and push images
@@ -202,7 +224,7 @@ pipeline:
                     img=ghcr.io/vietpham123/astroshop-$svc:$tag
                     docker build -f "$df" -t "$img" \
                       --label org.opencontainers.image.version="$tag" \
-                      --label org.opencontainers.image.revision=<+codebase.commitSha> \
+                      --label org.opencontainers.image.revision=<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA> \
                       --label org.opencontainers.image.source=https://github.com/vietpham123/astroshop_devcycle_harness .
                     docker push "$img"
                   done
@@ -223,7 +245,7 @@ pipeline:
                   RUN_URL: "<+pipeline.executionUrl>"
                   REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
                   GIT_BRANCH: "<+codebase.branch>"
-                  GIT_SHA: "<+codebase.commitSha>"
+                  GIT_SHA: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                   CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
                 command: |
                   for svc in ${CHANGED:-astroshop}; do
@@ -234,9 +256,15 @@ pipeline:
                       TAG_RECOMMENDATION) tag=<+execution.steps.detect.output.outputVariables.TAG_RECOMMENDATION> ;;
                       *) tag="" ;;
                     esac
-                    ARTIFACT_NAME=$svc ARTIFACT_VERSION=$tag ARTIFACT_ID=<+codebase.shortCommitSha> \
+                    ARTIFACT_NAME=$svc ARTIFACT_VERSION=$tag ARTIFACT_ID=<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA> \
                       sh .harness/scripts/sdlc-event.sh build "Build and push" <+execution.steps.build_push.status> "$(cat /harness/.sdlc/build_start 2>/dev/null)"
                   done
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
   - stage:
       name: Deploy QA
       identifier: deploy_qa
@@ -322,7 +350,7 @@ pipeline:
                   type: Inline
                   spec:
                     script: |
-                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh || { echo "sdlc-event script fetch failed; skipping"; exit 0; }
                       for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
                         ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
                           sh /tmp/sdlc-event.sh deploy_<+env.identifier> "Helm deploy to <+env.identifier>" <+execution.steps.helm_deploy.status> <+execution.steps.helm_deploy.startTs>
@@ -351,14 +379,20 @@ pipeline:
                   value: https://github.com/vietpham123/astroshop_devcycle_harness
                 - name: GIT_SHA
                   type: String
-                  value: "<+codebase.commitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                 - name: ARTIFACT_ID
                   type: String
-                  value: "<+codebase.shortCommitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA>"
                 - name: DEPLOY_ENV
                   type: String
                   value: "<+env.identifier>"
                 outputVariables: []
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           - step:
               type: ShellScript
               name: Smoke test
@@ -401,7 +435,7 @@ pipeline:
                   type: Inline
                   spec:
                     script: |
-                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh || { echo "sdlc-event script fetch failed; skipping"; exit 0; }
                       for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
                         ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
                           sh /tmp/sdlc-event.sh smoketest_<+env.identifier> "Smoke test <+env.identifier>" <+execution.steps.smoke_test.status> <+execution.steps.smoke_test.startTs>
@@ -430,14 +464,20 @@ pipeline:
                   value: https://github.com/vietpham123/astroshop_devcycle_harness
                 - name: GIT_SHA
                   type: String
-                  value: "<+codebase.commitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                 - name: ARTIFACT_ID
                   type: String
-                  value: "<+codebase.shortCommitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA>"
                 - name: DEPLOY_ENV
                   type: String
                   value: "<+env.identifier>"
                 outputVariables: []
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           - step:
               type: Wait
               name: Bake time
@@ -520,7 +560,7 @@ pipeline:
                   type: Inline
                   spec:
                     script: |
-                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh || { echo "sdlc-event script fetch failed; skipping"; exit 0; }
                       for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
                         ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
                           sh /tmp/sdlc-event.sh deploy_<+env.identifier> "Helm deploy to <+env.identifier>" <+execution.steps.helm_deploy.status> <+execution.steps.helm_deploy.startTs>
@@ -549,14 +589,20 @@ pipeline:
                   value: https://github.com/vietpham123/astroshop_devcycle_harness
                 - name: GIT_SHA
                   type: String
-                  value: "<+codebase.commitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                 - name: ARTIFACT_ID
                   type: String
-                  value: "<+codebase.shortCommitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA>"
                 - name: DEPLOY_ENV
                   type: String
                   value: "<+env.identifier>"
                 outputVariables: []
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           - step:
               type: ShellScript
               name: Smoke test
@@ -599,7 +645,7 @@ pipeline:
                   type: Inline
                   spec:
                     script: |
-                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh || { echo "sdlc-event script fetch failed; skipping"; exit 0; }
                       for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
                         ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
                           sh /tmp/sdlc-event.sh smoketest_<+env.identifier> "Smoke test <+env.identifier>" <+execution.steps.smoke_test.status> <+execution.steps.smoke_test.startTs>
@@ -628,14 +674,20 @@ pipeline:
                   value: https://github.com/vietpham123/astroshop_devcycle_harness
                 - name: GIT_SHA
                   type: String
-                  value: "<+codebase.commitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.GIT_SHA>"
                 - name: ARTIFACT_ID
                   type: String
-                  value: "<+codebase.shortCommitSha>"
+                  value: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.SHORT_SHA>"
                 - name: DEPLOY_ENV
                   type: String
                   value: "<+env.identifier>"
                 outputVariables: []
+              failureStrategies:
+              - onFailure:
+                  errors:
+                  - AllErrors
+                  action:
+                    type: Ignore
           rollbackSteps:
           - step:
               type: HelmRollback
