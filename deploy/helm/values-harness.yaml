@@ -46,6 +46,9 @@ components:
     envOverrides:
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: service.version=<+artifacts.sidecars.recommendation.tag>,deployment.environment.name=<+env.identifier>,service.criticality=medium
+      # Fork main has the Java rewrite; chart 0.42.6 still targets the Python service (gRPC :4317).
+      - name: OTEL_EXPORTER_OTLP_PROTOCOL
+        value: grpc
 
   # ---- Constant synthetic load so version is the only variable in comparisons ----
   load-generator:
