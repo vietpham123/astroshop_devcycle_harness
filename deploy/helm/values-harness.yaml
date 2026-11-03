@@ -1,5 +1,5 @@
 # Astroshop (OpenTelemetry Demo 0.42.6 / app 3.1.0) overlay for the Harness → Dynatrace lab.
-# Rendered by Harness Native Helm: <+...> expressions are resolved per environment (qa | prod) at deploy time.
+# Rendered by Harness Native Helm: Harness expressions are resolved per environment (qa | prod) at deploy time.
 # Telemetry path: app (OTel SDKs) → in-namespace otel-collector → Dynatrace OTLP. No OneAgent injection in app namespaces.
 
 default:
