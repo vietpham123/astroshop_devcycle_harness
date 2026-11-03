@@ -17,6 +17,8 @@ components:
     imageOverride:
       repository: ghcr.io/vietpham123/astroshop-product-catalog
       tag: <+artifacts.primary.tag>
+      pullSecrets:
+        - name: ghcr-pull
     podLabels:
       app.kubernetes.io/version: <+artifacts.primary.tag>
     envOverrides:
@@ -26,6 +28,8 @@ components:
     imageOverride:
       repository: ghcr.io/vietpham123/astroshop-cart
       tag: <+artifacts.sidecars.cart.tag>
+      pullSecrets:
+        - name: ghcr-pull
     podLabels:
       app.kubernetes.io/version: <+artifacts.sidecars.cart.tag>
     envOverrides:
@@ -35,6 +39,8 @@ components:
     imageOverride:
       repository: ghcr.io/vietpham123/astroshop-recommendation
       tag: <+artifacts.sidecars.recommendation.tag>
+      pullSecrets:
+        - name: ghcr-pull
     podLabels:
       app.kubernetes.io/version: <+artifacts.sidecars.recommendation.tag>
     envOverrides:

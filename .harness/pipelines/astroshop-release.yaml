@@ -95,7 +95,7 @@ pipeline:
                   done
           - step:
               type: Run
-              name: Quality scan (unit tests)
+              name: Quality scan - unit tests
               identifier: quality_scan
               when:
                 stageStatus: Success
@@ -141,7 +141,7 @@ pipeline:
                   done
           - step:
               type: Run
-              name: Security scan (Trivy fs)
+              name: Security scan - Trivy fs
               identifier: security_scan
               when:
                 stageStatus: Success
@@ -277,7 +277,7 @@ pipeline:
           steps:
           - step:
               type: ShellScript
-              name: Ensure Dynatrace OTLP secret
+              name: Ensure namespace secrets
               identifier: ensure_secret
               timeout: 2m
               spec:
@@ -294,7 +294,10 @@ pipeline:
                       kubectl -n "$NS" create secret generic dynatrace-otlp \
                         --from-literal=token='<+secrets.getValue("dt_ingest_token")>' \
                         --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-                      echo "secret dynatrace-otlp ready in $NS"
+                      kubectl -n "$NS" create secret docker-registry ghcr-pull --docker-server=ghcr.io \
+                        --docker-username=vietpham123 --docker-password='<+secrets.getValue("ghcr_pat")>' \
+                        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                      echo "secrets dynatrace-otlp + ghcr-pull ready in $NS"
                 environmentVariables: []
                 outputVariables: []
           - step:
@@ -472,7 +475,7 @@ pipeline:
           steps:
           - step:
               type: ShellScript
-              name: Ensure Dynatrace OTLP secret
+              name: Ensure namespace secrets
               identifier: ensure_secret
               timeout: 2m
               spec:
@@ -489,7 +492,10 @@ pipeline:
                       kubectl -n "$NS" create secret generic dynatrace-otlp \
                         --from-literal=token='<+secrets.getValue("dt_ingest_token")>' \
                         --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-                      echo "secret dynatrace-otlp ready in $NS"
+                      kubectl -n "$NS" create secret docker-registry ghcr-pull --docker-server=ghcr.io \
+                        --docker-username=vietpham123 --docker-password='<+secrets.getValue("ghcr_pat")>' \
+                        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                      echo "secrets dynatrace-otlp + ghcr-pull ready in $NS"
                 environmentVariables: []
                 outputVariables: []
           - step:
