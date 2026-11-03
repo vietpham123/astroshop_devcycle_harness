@@ -1,0 +1,13 @@
+infrastructureDefinition:
+  name: k3s-lab-qa
+  identifier: k3s_lab_qa
+  orgIdentifier: default
+  projectIdentifier: default_project
+  environmentRef: qa
+  deploymentType: NativeHelm
+  type: KubernetesDirect
+  spec:
+    connectorRef: k3s_lab
+    namespace: astroshop-qa
+    releaseName: astroshop-qa
+  allowSimultaneousDeployments: false

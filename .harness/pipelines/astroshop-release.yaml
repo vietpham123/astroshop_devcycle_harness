@@ -1,0 +1,645 @@
+# Harness YAML does not support anchors; this file is fully expanded.
+pipeline:
+  name: astroshop-release
+  identifier: astroshop_release
+  orgIdentifier: default
+  projectIdentifier: default_project
+  description: Build changed Astroshop services → QA (smoke + bake) → prod. Every
+    stage emits a Dynatrace SDLC event.
+  tags:
+    dynatrace-lab: ''
+  properties:
+    ci:
+      codebase:
+        connectorRef: vietsgh
+        repoName: astroshop_devcycle_harness
+        depth: 100
+        build: "<+input>"
+  variables:
+  - name: dt_env_url
+    type: String
+    value: https://gyz6507h.sprint.dynatracelabs.com
+  - name: bake_time
+    type: String
+    description: QA soak before promoting (gives Dynatrace a comparison window)
+    value: 15m
+  stages:
+  - stage:
+      name: Build
+      identifier: build
+      type: CI
+      spec:
+        cloneCodebase: true
+        platform:
+          os: Linux
+          arch: Amd64
+        runtime:
+          type: Cloud
+          spec: {}
+        sharedPaths:
+        - "/harness/.sdlc"
+        execution:
+          steps:
+          - step:
+              type: Run
+              name: Detect changes
+              identifier: detect
+              spec:
+                shell: Bash
+                envVariables:
+                  GHCR_PAT: <+secrets.getValue("ghcr_pat")>
+                command: |
+                  set -euo pipefail
+                  echo "$GHCR_PAT" | docker login ghcr.io -u vietpham123 --password-stdin >/dev/null
+                  CHANGED=""
+                  for svc in product-catalog cart recommendation; do
+                    tag="$(tr -d '[:space:]' < src/$svc/VERSION)-$(git log -1 --format=%h -- src/$svc)"
+                    var="TAG_$(echo $svc | tr 'a-z-' 'A-Z_')"
+                    export "$var=$tag"
+                    if docker manifest inspect ghcr.io/vietpham123/astroshop-$svc:$tag >/dev/null 2>&1; then
+                      echo "$svc:$tag exists → skip build"
+                    else
+                      CHANGED="$CHANGED $svc"; echo "$svc:$tag → BUILD"
+                    fi
+                  done
+                  export CHANGED="$(echo $CHANGED | xargs)"
+                  export START_MS="$(date +%s%3N)"
+                  mkdir -p /harness/.sdlc && echo "$START_MS" > /harness/.sdlc/start_ms
+                outputVariables:
+                - name: CHANGED
+                - name: TAG_PRODUCT_CATALOG
+                - name: TAG_CART
+                - name: TAG_RECOMMENDATION
+                - name: START_MS
+          - step:
+              type: Run
+              name: SDLC checkout
+              identifier: sdlc_checkout
+              spec:
+                shell: Bash
+                envVariables:
+                  DT_ENV_URL: "<+pipeline.variables.dt_env_url>"
+                  DT_INGEST_TOKEN: <+secrets.getValue("dt_ingest_token")>
+                  PIPELINE_ID: "<+pipeline.identifier>"
+                  PIPELINE_NAME: "<+pipeline.name>"
+                  RUN_ID: "<+pipeline.executionId>"
+                  RUN_URL: "<+pipeline.executionUrl>"
+                  REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
+                  GIT_BRANCH: "<+codebase.branch>"
+                  GIT_SHA: "<+codebase.commitSha>"
+                  CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
+                command: |
+                  for svc in ${CHANGED:-astroshop}; do
+                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+codebase.shortCommitSha> \
+                      sh .harness/scripts/sdlc-event.sh checkout "Checkout" <+execution.steps.detect.status> <+execution.steps.detect.output.outputVariables.START_MS>
+                  done
+          - step:
+              type: Run
+              name: Quality scan (unit tests)
+              identifier: quality_scan
+              when:
+                stageStatus: Success
+                condition: <+execution.steps.detect.output.outputVariables.CHANGED>
+                  != ""
+              spec:
+                shell: Bash
+                envVariables:
+                  CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
+                command: |
+                  set -euo pipefail
+                  date +%s%3N > /harness/.sdlc/quality_start
+                  for svc in $CHANGED; do
+                    case $svc in
+                      product-catalog) docker run --rm -v "$PWD/src/product-catalog:/src" -w /src golang:1.26 sh -c 'go vet ./... && go test ./...' ;;
+                      cart)            docker run --rm -v "$PWD:/repo" -w /repo/src/cart mcr.microsoft.com/dotnet/sdk:10.0 dotnet test tests ;;
+                      recommendation)  docker run --rm -v "$PWD/src/recommendation:/src" -w /src eclipse-temurin:24-jdk ./gradlew --no-daemon test ;;
+                    esac
+                  done
+          - step:
+              type: Run
+              name: SDLC quality_scan
+              identifier: sdlc_quality
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                envVariables:
+                  DT_ENV_URL: "<+pipeline.variables.dt_env_url>"
+                  DT_INGEST_TOKEN: <+secrets.getValue("dt_ingest_token")>
+                  PIPELINE_ID: "<+pipeline.identifier>"
+                  PIPELINE_NAME: "<+pipeline.name>"
+                  RUN_ID: "<+pipeline.executionId>"
+                  RUN_URL: "<+pipeline.executionUrl>"
+                  REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
+                  GIT_BRANCH: "<+codebase.branch>"
+                  GIT_SHA: "<+codebase.commitSha>"
+                  CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
+                command: |
+                  for svc in ${CHANGED:-astroshop}; do
+                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+codebase.shortCommitSha> \
+                      sh .harness/scripts/sdlc-event.sh quality_scan "Unit tests" <+execution.steps.quality_scan.status> "$(cat /harness/.sdlc/quality_start 2>/dev/null)"
+                  done
+          - step:
+              type: Run
+              name: Security scan (Trivy fs)
+              identifier: security_scan
+              when:
+                stageStatus: Success
+              spec:
+                shell: Sh
+                connectorRef: account.harnessImage
+                image: aquasec/trivy:latest
+                command: |
+                  date +%s000 > /harness/.sdlc/security_start
+                  trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 --no-progress src/product-catalog src/cart src/recommendation
+          - step:
+              type: Run
+              name: SDLC security_scan
+              identifier: sdlc_security
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                envVariables:
+                  DT_ENV_URL: "<+pipeline.variables.dt_env_url>"
+                  DT_INGEST_TOKEN: <+secrets.getValue("dt_ingest_token")>
+                  PIPELINE_ID: "<+pipeline.identifier>"
+                  PIPELINE_NAME: "<+pipeline.name>"
+                  RUN_ID: "<+pipeline.executionId>"
+                  RUN_URL: "<+pipeline.executionUrl>"
+                  REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
+                  GIT_BRANCH: "<+codebase.branch>"
+                  GIT_SHA: "<+codebase.commitSha>"
+                  CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
+                command: |
+                  for svc in ${CHANGED:-astroshop}; do
+                    ARTIFACT_NAME=$svc ARTIFACT_ID=<+codebase.shortCommitSha> \
+                      sh .harness/scripts/sdlc-event.sh security_scan "Trivy fs" <+execution.steps.security_scan.status> "$(cat /harness/.sdlc/security_start 2>/dev/null)"
+                  done
+          - step:
+              type: Run
+              name: Build and push images
+              identifier: build_push
+              when:
+                stageStatus: Success
+                condition: <+execution.steps.detect.output.outputVariables.CHANGED>
+                  != ""
+              spec:
+                shell: Bash
+                envVariables:
+                  GHCR_PAT: <+secrets.getValue("ghcr_pat")>
+                  CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
+                  TAG_PRODUCT_CATALOG: "<+execution.steps.detect.output.outputVariables.TAG_PRODUCT_CATALOG>"
+                  TAG_CART: "<+execution.steps.detect.output.outputVariables.TAG_CART>"
+                  TAG_RECOMMENDATION: "<+execution.steps.detect.output.outputVariables.TAG_RECOMMENDATION>"
+                command: |
+                  set -euo pipefail
+                  date +%s%3N > /harness/.sdlc/build_start
+                  echo "$GHCR_PAT" | docker login ghcr.io -u vietpham123 --password-stdin >/dev/null
+                  for svc in $CHANGED; do
+                    var="TAG_$(echo $svc | tr 'a-z-' 'A-Z_')"; tag="${!var}"
+                    case $svc in cart) df=src/cart/src/Dockerfile ;; *) df=src/$svc/Dockerfile ;; esac
+                    img=ghcr.io/vietpham123/astroshop-$svc:$tag
+                    docker build -f "$df" -t "$img" \
+                      --label org.opencontainers.image.version="$tag" \
+                      --label org.opencontainers.image.revision=<+codebase.commitSha> \
+                      --label org.opencontainers.image.source=https://github.com/vietpham123/astroshop_devcycle_harness .
+                    docker push "$img"
+                  done
+          - step:
+              type: Run
+              name: SDLC build
+              identifier: sdlc_build
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                envVariables:
+                  DT_ENV_URL: "<+pipeline.variables.dt_env_url>"
+                  DT_INGEST_TOKEN: <+secrets.getValue("dt_ingest_token")>
+                  PIPELINE_ID: "<+pipeline.identifier>"
+                  PIPELINE_NAME: "<+pipeline.name>"
+                  RUN_ID: "<+pipeline.executionId>"
+                  RUN_URL: "<+pipeline.executionUrl>"
+                  REPO_URL: https://github.com/vietpham123/astroshop_devcycle_harness
+                  GIT_BRANCH: "<+codebase.branch>"
+                  GIT_SHA: "<+codebase.commitSha>"
+                  CHANGED: "<+execution.steps.detect.output.outputVariables.CHANGED>"
+                command: |
+                  for svc in ${CHANGED:-astroshop}; do
+                    var="TAG_$(echo $svc | tr 'a-z-' 'A-Z_')"
+                    case $var in
+                      TAG_PRODUCT_CATALOG) tag=<+execution.steps.detect.output.outputVariables.TAG_PRODUCT_CATALOG> ;;
+                      TAG_CART) tag=<+execution.steps.detect.output.outputVariables.TAG_CART> ;;
+                      TAG_RECOMMENDATION) tag=<+execution.steps.detect.output.outputVariables.TAG_RECOMMENDATION> ;;
+                      *) tag="" ;;
+                    esac
+                    ARTIFACT_NAME=$svc ARTIFACT_VERSION=$tag ARTIFACT_ID=<+codebase.shortCommitSha> \
+                      sh .harness/scripts/sdlc-event.sh build "Build and push" <+execution.steps.build_push.status> "$(cat /harness/.sdlc/build_start 2>/dev/null)"
+                  done
+  - stage:
+      name: Deploy QA
+      identifier: deploy_qa
+      type: Deployment
+      spec:
+        deploymentType: NativeHelm
+        service:
+          serviceRef: astroshop
+          serviceInputs:
+            serviceDefinition:
+              type: NativeHelm
+              spec:
+                artifacts:
+                  primary:
+                    primaryArtifactRef: product_catalog
+                    sources:
+                    - identifier: product_catalog
+                      type: DockerRegistry
+                      spec:
+                        tag: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.TAG_PRODUCT_CATALOG>"
+                  sidecars:
+                  - sidecar:
+                      identifier: cart
+                      type: DockerRegistry
+                      spec:
+                        tag: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.TAG_CART>"
+                  - sidecar:
+                      identifier: recommendation
+                      type: DockerRegistry
+                      spec:
+                        tag: "<+pipeline.stages.build.spec.execution.steps.detect.output.outputVariables.TAG_RECOMMENDATION>"
+        environment:
+          environmentRef: qa
+          deployToAll: false
+          infrastructureDefinitions:
+          - identifier: k3s_lab_qa
+        execution:
+          steps:
+          - step:
+              type: ShellScript
+              name: Ensure Dynatrace OTLP secret
+              identifier: ensure_secret
+              timeout: 2m
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      set -e
+                      export KUBECONFIG=${HARNESS_KUBE_CONFIG_PATH}
+                      NS=<+infra.namespace>
+                      kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                      kubectl -n "$NS" create secret generic dynatrace-otlp \
+                        --from-literal=token='<+secrets.getValue("dt_ingest_token")>' \
+                        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                      echo "secret dynatrace-otlp ready in $NS"
+                environmentVariables: []
+                outputVariables: []
+          - step:
+              type: HelmDeploy
+              name: Helm deploy
+              identifier: helm_deploy
+              timeout: 15m
+              spec:
+                skipDryRun: false
+                ignoreReleaseHistFailStatus: false
+          - step:
+              type: ShellScript
+              name: SDLC deploy
+              identifier: sdlc_deploy
+              timeout: 2m
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
+                        ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
+                          sh /tmp/sdlc-event.sh deploy_<+env.identifier> "Helm deploy to <+env.identifier>" <+execution.steps.helm_deploy.status> <+execution.steps.helm_deploy.startTs>
+                      done
+                environmentVariables:
+                - name: DT_ENV_URL
+                  type: String
+                  value: "<+pipeline.variables.dt_env_url>"
+                - name: DT_INGEST_TOKEN
+                  type: Secret
+                  value: dt_ingest_token
+                - name: PIPELINE_ID
+                  type: String
+                  value: "<+pipeline.identifier>"
+                - name: PIPELINE_NAME
+                  type: String
+                  value: "<+pipeline.name>"
+                - name: RUN_ID
+                  type: String
+                  value: "<+pipeline.executionId>"
+                - name: RUN_URL
+                  type: String
+                  value: "<+pipeline.executionUrl>"
+                - name: REPO_URL
+                  type: String
+                  value: https://github.com/vietpham123/astroshop_devcycle_harness
+                - name: GIT_SHA
+                  type: String
+                  value: "<+codebase.commitSha>"
+                - name: ARTIFACT_ID
+                  type: String
+                  value: "<+codebase.shortCommitSha>"
+                - name: DEPLOY_ENV
+                  type: String
+                  value: "<+env.identifier>"
+                outputVariables: []
+          - step:
+              type: ShellScript
+              name: Smoke test
+              identifier: smoke_test
+              timeout: 10m
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      set -e
+                      export KUBECONFIG=${HARNESS_KUBE_CONFIG_PATH}
+                      NS=<+infra.namespace>
+                      kubectl -n "$NS" rollout status deploy/frontend-proxy deploy/frontend deploy/product-catalog deploy/cart deploy/recommendation --timeout=5m
+                      BASE="http://frontend-proxy.$NS.svc.cluster.local:8080"
+                      for path in /api/products /api/recommendations?productIds=OLJCESPC7Z /api/cart; do
+                        ok=0
+                        for i in $(seq 1 10); do
+                          code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$path") && [ "$code" = "200" ] && ok=1 && break
+                          sleep 6
+                        done
+                        [ $ok = 1 ] || { echo "SMOKE FAIL $path ($code)"; exit 1; }
+                        echo "ok $path"
+                      done
+                environmentVariables: []
+                outputVariables: []
+          - step:
+              type: ShellScript
+              name: SDLC smoketest
+              identifier: sdlc_smoke
+              timeout: 2m
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
+                        ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
+                          sh /tmp/sdlc-event.sh smoketest_<+env.identifier> "Smoke test <+env.identifier>" <+execution.steps.smoke_test.status> <+execution.steps.smoke_test.startTs>
+                      done
+                environmentVariables:
+                - name: DT_ENV_URL
+                  type: String
+                  value: "<+pipeline.variables.dt_env_url>"
+                - name: DT_INGEST_TOKEN
+                  type: Secret
+                  value: dt_ingest_token
+                - name: PIPELINE_ID
+                  type: String
+                  value: "<+pipeline.identifier>"
+                - name: PIPELINE_NAME
+                  type: String
+                  value: "<+pipeline.name>"
+                - name: RUN_ID
+                  type: String
+                  value: "<+pipeline.executionId>"
+                - name: RUN_URL
+                  type: String
+                  value: "<+pipeline.executionUrl>"
+                - name: REPO_URL
+                  type: String
+                  value: https://github.com/vietpham123/astroshop_devcycle_harness
+                - name: GIT_SHA
+                  type: String
+                  value: "<+codebase.commitSha>"
+                - name: ARTIFACT_ID
+                  type: String
+                  value: "<+codebase.shortCommitSha>"
+                - name: DEPLOY_ENV
+                  type: String
+                  value: "<+env.identifier>"
+                outputVariables: []
+          - step:
+              type: Wait
+              name: Bake time
+              identifier: bake
+              spec:
+                duration: "<+pipeline.variables.bake_time>"
+          rollbackSteps:
+          - step:
+              type: HelmRollback
+              name: Helm rollback
+              identifier: helm_rollback
+              timeout: 10m
+              spec: {}
+      failureStrategies:
+      - onFailure:
+          errors:
+          - AllErrors
+          action:
+            type: StageRollback
+  - stage:
+      name: Deploy Prod
+      identifier: deploy_prod
+      type: Deployment
+      spec:
+        deploymentType: NativeHelm
+        service:
+          useFromStage:
+            stage: deploy_qa
+        environment:
+          environmentRef: prod
+          deployToAll: false
+          infrastructureDefinitions:
+          - identifier: k3s_lab_prod
+        execution:
+          steps:
+          - step:
+              type: ShellScript
+              name: Ensure Dynatrace OTLP secret
+              identifier: ensure_secret
+              timeout: 2m
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      set -e
+                      export KUBECONFIG=${HARNESS_KUBE_CONFIG_PATH}
+                      NS=<+infra.namespace>
+                      kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                      kubectl -n "$NS" create secret generic dynatrace-otlp \
+                        --from-literal=token='<+secrets.getValue("dt_ingest_token")>' \
+                        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                      echo "secret dynatrace-otlp ready in $NS"
+                environmentVariables: []
+                outputVariables: []
+          - step:
+              type: HelmDeploy
+              name: Helm deploy
+              identifier: helm_deploy
+              timeout: 15m
+              spec:
+                skipDryRun: false
+                ignoreReleaseHistFailStatus: false
+          - step:
+              type: ShellScript
+              name: SDLC deploy
+              identifier: sdlc_deploy
+              timeout: 2m
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
+                        ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
+                          sh /tmp/sdlc-event.sh deploy_<+env.identifier> "Helm deploy to <+env.identifier>" <+execution.steps.helm_deploy.status> <+execution.steps.helm_deploy.startTs>
+                      done
+                environmentVariables:
+                - name: DT_ENV_URL
+                  type: String
+                  value: "<+pipeline.variables.dt_env_url>"
+                - name: DT_INGEST_TOKEN
+                  type: Secret
+                  value: dt_ingest_token
+                - name: PIPELINE_ID
+                  type: String
+                  value: "<+pipeline.identifier>"
+                - name: PIPELINE_NAME
+                  type: String
+                  value: "<+pipeline.name>"
+                - name: RUN_ID
+                  type: String
+                  value: "<+pipeline.executionId>"
+                - name: RUN_URL
+                  type: String
+                  value: "<+pipeline.executionUrl>"
+                - name: REPO_URL
+                  type: String
+                  value: https://github.com/vietpham123/astroshop_devcycle_harness
+                - name: GIT_SHA
+                  type: String
+                  value: "<+codebase.commitSha>"
+                - name: ARTIFACT_ID
+                  type: String
+                  value: "<+codebase.shortCommitSha>"
+                - name: DEPLOY_ENV
+                  type: String
+                  value: "<+env.identifier>"
+                outputVariables: []
+          - step:
+              type: ShellScript
+              name: Smoke test
+              identifier: smoke_test
+              timeout: 10m
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      set -e
+                      export KUBECONFIG=${HARNESS_KUBE_CONFIG_PATH}
+                      NS=<+infra.namespace>
+                      kubectl -n "$NS" rollout status deploy/frontend-proxy deploy/frontend deploy/product-catalog deploy/cart deploy/recommendation --timeout=5m
+                      BASE="http://frontend-proxy.$NS.svc.cluster.local:8080"
+                      for path in /api/products /api/recommendations?productIds=OLJCESPC7Z /api/cart; do
+                        ok=0
+                        for i in $(seq 1 10); do
+                          code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$path") && [ "$code" = "200" ] && ok=1 && break
+                          sleep 6
+                        done
+                        [ $ok = 1 ] || { echo "SMOKE FAIL $path ($code)"; exit 1; }
+                        echo "ok $path"
+                      done
+                environmentVariables: []
+                outputVariables: []
+          - step:
+              type: ShellScript
+              name: SDLC smoketest
+              identifier: sdlc_smoke
+              timeout: 2m
+              when:
+                stageStatus: All
+              spec:
+                shell: Bash
+                onDelegate: true
+                source:
+                  type: Inline
+                  spec:
+                    script: |
+                      curl -sfL https://raw.githubusercontent.com/vietpham123/astroshop_devcycle_harness/<+codebase.commitSha>/.harness/scripts/sdlc-event.sh -o /tmp/sdlc-event.sh
+                      for pair in "product-catalog=<+artifacts.primary.tag>" "cart=<+artifacts.sidecars.cart.tag>" "recommendation=<+artifacts.sidecars.recommendation.tag>"; do
+                        ARTIFACT_NAME=${pair%%=*} ARTIFACT_VERSION=${pair#*=} \
+                          sh /tmp/sdlc-event.sh smoketest_<+env.identifier> "Smoke test <+env.identifier>" <+execution.steps.smoke_test.status> <+execution.steps.smoke_test.startTs>
+                      done
+                environmentVariables:
+                - name: DT_ENV_URL
+                  type: String
+                  value: "<+pipeline.variables.dt_env_url>"
+                - name: DT_INGEST_TOKEN
+                  type: Secret
+                  value: dt_ingest_token
+                - name: PIPELINE_ID
+                  type: String
+                  value: "<+pipeline.identifier>"
+                - name: PIPELINE_NAME
+                  type: String
+                  value: "<+pipeline.name>"
+                - name: RUN_ID
+                  type: String
+                  value: "<+pipeline.executionId>"
+                - name: RUN_URL
+                  type: String
+                  value: "<+pipeline.executionUrl>"
+                - name: REPO_URL
+                  type: String
+                  value: https://github.com/vietpham123/astroshop_devcycle_harness
+                - name: GIT_SHA
+                  type: String
+                  value: "<+codebase.commitSha>"
+                - name: ARTIFACT_ID
+                  type: String
+                  value: "<+codebase.shortCommitSha>"
+                - name: DEPLOY_ENV
+                  type: String
+                  value: "<+env.identifier>"
+                outputVariables: []
+          rollbackSteps:
+          - step:
+              type: HelmRollback
+              name: Helm rollback
+              identifier: helm_rollback
+              timeout: 10m
+              spec: {}
+      failureStrategies:
+      - onFailure:
+          errors:
+          - AllErrors
+          action:
+            type: StageRollback

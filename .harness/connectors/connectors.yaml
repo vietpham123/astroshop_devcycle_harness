@@ -1,0 +1,36 @@
+# Connectors this lab needs (created once via API/UI; listed here as code for reproducibility).
+# vietsgh (GitHub) already exists in the project.
+- connector:
+    name: k3s-lab
+    identifier: k3s_lab
+    orgIdentifier: default
+    projectIdentifier: default_project
+    type: K8sCluster
+    spec:
+      credential:
+        type: InheritFromDelegate
+      delegateSelectors: [harness-dt-lab]
+- connector:
+    name: otel-helm-charts
+    identifier: otel_helm_charts
+    orgIdentifier: default
+    projectIdentifier: default_project
+    type: HttpHelmRepo
+    spec:
+      helmRepoUrl: https://open-telemetry.github.io/opentelemetry-helm-charts
+      auth:
+        type: Anonymous
+- connector:
+    name: ghcr
+    identifier: ghcr
+    orgIdentifier: default
+    projectIdentifier: default_project
+    type: DockerRegistry
+    spec:
+      dockerRegistryUrl: https://ghcr.io
+      providerType: Other
+      auth:
+        type: UsernamePassword
+        spec:
+          username: vietpham123
+          passwordRef: ghcr_pat        # Harness secret: GitHub PAT with write:packages

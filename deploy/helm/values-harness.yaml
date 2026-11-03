@@ -1,0 +1,127 @@
+# Astroshop (OpenTelemetry Demo 0.42.6 / app 3.1.0) overlay for the Harness → Dynatrace lab.
+# Rendered by Harness Native Helm: <+...> expressions are resolved per environment (qa | prod) at deploy time.
+# Telemetry path: app (OTel SDKs) → in-namespace otel-collector → Dynatrace OTLP. No OneAgent injection in app namespaces.
+
+default:
+  envOverrides:
+    # Dynatrace OTLP metrics ingest requires DELTA temporality.
+    - name: OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      value: delta
+    # Baseline for services we don't build: upstream image version + environment.
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: service.version=3.1.0,deployment.environment.name=<+env.identifier>
+
+components:
+  # ---- Services built by Harness (regression targets): image + version come from the Harness service artifacts ----
+  product-catalog:
+    imageOverride:
+      repository: ghcr.io/vietpham123/astroshop-product-catalog
+      tag: <+artifacts.primary.tag>
+    podLabels:
+      app.kubernetes.io/version: <+artifacts.primary.tag>
+    envOverrides:
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: service.version=<+artifacts.primary.tag>,deployment.environment.name=<+env.identifier>,service.criticality=high
+  cart:
+    imageOverride:
+      repository: ghcr.io/vietpham123/astroshop-cart
+      tag: <+artifacts.sidecars.cart.tag>
+    podLabels:
+      app.kubernetes.io/version: <+artifacts.sidecars.cart.tag>
+    envOverrides:
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: service.version=<+artifacts.sidecars.cart.tag>,deployment.environment.name=<+env.identifier>,service.criticality=high
+  recommendation:
+    imageOverride:
+      repository: ghcr.io/vietpham123/astroshop-recommendation
+      tag: <+artifacts.sidecars.recommendation.tag>
+    podLabels:
+      app.kubernetes.io/version: <+artifacts.sidecars.recommendation.tag>
+    envOverrides:
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: service.version=<+artifacts.sidecars.recommendation.tag>,deployment.environment.name=<+env.identifier>,service.criticality=medium
+
+  # ---- Constant synthetic load so version is the only variable in comparisons ----
+  load-generator:
+    envOverrides:
+      - name: LOCUST_USERS
+        value: "25"
+      - name: LOCUST_SPAWN_RATE
+        value: "5"
+      - name: LOCUST_AUTOSTART
+        value: "true"
+      - name: LOCUST_HEADLESS
+        value: "true"
+
+# ---- Bundled backends replaced by Dynatrace ----
+jaeger:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+opensearch:
+  enabled: false
+
+# ---- Collector: export everything to Dynatrace ----
+opentelemetry-collector:
+  mode: deployment
+  replicaCount: 1
+  presets:
+    # Dynatrace Kubernetes monitoring (ActiveGate) already covers host/kubelet/cluster metrics.
+    hostMetrics:
+      enabled: false
+    kubeletMetrics:
+      enabled: false
+    clusterMetrics:
+      enabled: false
+    annotationDiscovery:
+      metrics:
+        enabled: false
+    # Keep: adds k8s.namespace.name / k8s.pod.name etc. (Release Comparison filters on namespace).
+    kubernetesAttributes:
+      enabled: true
+  # Two releases (qa, prod) share one cluster → cluster-scoped RBAC names must differ.
+  clusterRole:
+    name: otel-collector-<+env.identifier>
+    clusterRoleBinding:
+      name: otel-collector-<+env.identifier>
+  extraEnvs:
+    - name: DT_OTLP_ENDPOINT
+      value: https://gyz6507h.sprint.dynatracelabs.com/api/v2/otlp
+    - name: DT_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: dynatrace-otlp
+          key: token
+  config:
+    exporters:
+      otlp_grpc/jaeger: null
+      otlp_http/prometheus: null
+      opensearch: null
+      otlp_grpc/firepit: null
+      otlp_http/dynatrace:
+        endpoint: ${env:DT_OTLP_ENDPOINT}
+        headers:
+          Authorization: "Api-Token ${env:DT_API_TOKEN}"
+        sending_queue:
+          batch: {}
+    connectors:
+      span_metrics: null
+    processors:
+      cumulativetodelta: {}
+    service:
+      pipelines:
+        traces:
+          processors: [memory_limiter, resource_detection, resource, transform/sanitize_spans, gen_ai_normalizer, transform/redact_sensitive_data, redaction]
+          exporters: [otlp_http/dynatrace]
+        metrics:
+          receivers: [otlp, kafkametrics, prometheus/ad]
+          processors: [memory_limiter, resource_detection, resource, cumulativetodelta]
+          exporters: [otlp_http/dynatrace]
+        logs:
+          processors: [memory_limiter, resource_detection, resource, transform/sanitize_logs]
+          exporters: [otlp_http/dynatrace]
+        # Dynatrace has no OTLP profiles ingest; the chart template needs the pipeline to exist.
+        profiles:
+          exporters: [debug]

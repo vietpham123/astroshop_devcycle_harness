@@ -1,0 +1,61 @@
+service:
+  name: astroshop
+  identifier: astroshop
+  orgIdentifier: default
+  projectIdentifier: default_project
+  description: OpenTelemetry Demo (Astronomy Shop); upstream chart + lab overlay. Primary artifact = product-catalog; sidecars = cart, recommendation.
+  serviceDefinition:
+    type: NativeHelm
+    spec:
+      manifests:
+        - manifest:
+            identifier: otel_demo_chart
+            type: HelmChart
+            spec:
+              store:
+                type: Http
+                spec:
+                  connectorRef: otel_helm_charts
+              chartName: opentelemetry-demo
+              chartVersion: 0.42.6
+              helmVersion: V3
+              skipResourceVersioning: false
+              valuesPaths: []
+        - manifest:
+            identifier: lab_values
+            type: Values
+            spec:
+              store:
+                type: Github
+                spec:
+                  connectorRef: vietsgh
+                  repoName: astroshop_devcycle_harness
+                  gitFetchType: Branch
+                  branch: main
+                  paths:
+                    - deploy/helm/values-harness.yaml
+      artifacts:
+        primary:
+          primaryArtifactRef: product_catalog
+          sources:
+            - identifier: product_catalog
+              type: DockerRegistry
+              spec:
+                connectorRef: ghcr
+                imagePath: vietpham123/astroshop-product-catalog
+                tag: <+input>
+        sidecars:
+          - sidecar:
+              identifier: cart
+              type: DockerRegistry
+              spec:
+                connectorRef: ghcr
+                imagePath: vietpham123/astroshop-cart
+                tag: <+input>
+          - sidecar:
+              identifier: recommendation
+              type: DockerRegistry
+              spec:
+                connectorRef: ghcr
+                imagePath: vietpham123/astroshop-recommendation
+                tag: <+input>
