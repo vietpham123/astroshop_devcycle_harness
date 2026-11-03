@@ -101,19 +101,15 @@ opentelemetry-collector:
           name: dynatrace-otlp
           key: token
   config:
+    # Upstream exporters stay defined (the collector validates every defined exporter);
+    # only otlp_http/dynatrace is wired into pipelines below.
     exporters:
-      otlp_grpc/jaeger: null
-      otlp_http/prometheus: null
-      opensearch: null
-      otlp_grpc/firepit: null
       otlp_http/dynatrace:
         endpoint: ${env:DT_OTLP_ENDPOINT}
         headers:
           Authorization: "Api-Token ${env:DT_API_TOKEN}"
         sending_queue:
           batch: {}
-    connectors:
-      span_metrics: null
     processors:
       cumulativetodelta: {}
     service:

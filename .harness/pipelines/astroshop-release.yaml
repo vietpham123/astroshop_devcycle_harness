@@ -411,7 +411,7 @@ pipeline:
                       set -e
                       export KUBECONFIG=${HARNESS_KUBE_CONFIG_PATH}
                       NS=<+infra.namespace>
-                      kubectl -n "$NS" rollout status deploy/frontend-proxy deploy/frontend deploy/product-catalog deploy/cart deploy/recommendation --timeout=5m
+                      kubectl -n "$NS" wait --for=condition=Available deploy --all --timeout=8m || { kubectl -n "$NS" get pods | grep -vE "Running|Completed"; exit 1; }
                       BASE="http://frontend-proxy.$NS.svc.cluster.local:8080"
                       for path in /api/products /api/recommendations?productIds=OLJCESPC7Z /api/cart; do
                         ok=0
@@ -621,7 +621,7 @@ pipeline:
                       set -e
                       export KUBECONFIG=${HARNESS_KUBE_CONFIG_PATH}
                       NS=<+infra.namespace>
-                      kubectl -n "$NS" rollout status deploy/frontend-proxy deploy/frontend deploy/product-catalog deploy/cart deploy/recommendation --timeout=5m
+                      kubectl -n "$NS" wait --for=condition=Available deploy --all --timeout=8m || { kubectl -n "$NS" get pods | grep -vE "Running|Completed"; exit 1; }
                       BASE="http://frontend-proxy.$NS.svc.cluster.local:8080"
                       for path in /api/products /api/recommendations?productIds=OLJCESPC7Z /api/cart; do
                         ok=0
